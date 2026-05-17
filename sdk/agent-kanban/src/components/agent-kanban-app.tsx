@@ -49,6 +49,7 @@ import type {
   PublicSession,
   RepositoryOption,
 } from "@/lib/agents/types"
+import { AgentDetailPanel } from "@/components/agent-detail-panel"
 import { cn } from "@/lib/utils"
 
 type GroupBy = "status" | "repository" | "createdAt"
@@ -133,6 +134,7 @@ export function AgentKanbanApp() {
   const [error, setError] = React.useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = React.useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false)
+  const [selectedAgent, setSelectedAgent] = React.useState<AgentCard | null>(null)
 
   const loadBoard = React.useCallback(async (sessionId: string) => {
     setIsLoading(true)
@@ -451,6 +453,7 @@ export function AgentKanbanApp() {
                     title={group.title}
                     icon={selectedGroupOption?.icon ?? CirclesFourIcon}
                     agents={group.agents}
+                    onSelectAgent={setSelectedAgent}
                   />
                 ))
               ) : showBoardLoading ? (
@@ -470,6 +473,22 @@ export function AgentKanbanApp() {
           repositories={repositories}
           onClose={() => setIsCreateOpen(false)}
           onCreated={handleAgentCreated}
+        />
+      ) : null}
+
+      {selectedAgent ? (
+        <AgentDetailPanel
+          agent={selectedAgent}
+          sessionId={session.id}
+          onClose={() => setSelectedAgent(null)}
+          onAgentUpdated={(updatedAgent) => {
+            setSelectedAgent(updatedAgent)
+            setAgents((current) =>
+              current.map((entry) =>
+                entry.id === updatedAgent.id ? updatedAgent : entry
+              )
+            )
+          }}
         />
       ) : null}
     </div>
@@ -581,10 +600,12 @@ function BoardColumn({
   title,
   icon: Icon,
   agents,
+  onSelectAgent,
 }: {
   title: string
   icon: IconComponent
   agents: AgentCard[]
+  onSelectAgent: (agent: AgentCard) => void
 }) {
   return (
     <section className="flex w-80 shrink-0 flex-col rounded-xl bg-muted/20">
@@ -597,7 +618,11 @@ function BoardColumn({
       </header>
       <div className="flex flex-col gap-2 p-2">
         {agents.map((agent) => (
-          <AgentCardPreview key={agent.id} agent={agent} />
+          <AgentCardPreview
+            key={agent.id}
+            agent={agent}
+            onSelect={() => onSelectAgent(agent)}
+          />
         ))}
       </div>
     </section>
@@ -725,14 +750,30 @@ function GroupOptionContent({ option }: { option: SelectableGroupOption }) {
   )
 }
 
-function AgentCardPreview({ agent }: { agent: AgentCard }) {
+function AgentCardPreview({
+  agent,
+  onSelect,
+}: {
+  agent: AgentCard
+  onSelect: () => void
+}) {
   const previewArtifact = getPreviewArtifact(agent.artifacts)
   const hasCardContent = Boolean(agent.latestMessage || previewArtifact)
 
   return (
     <Card
       size="sm"
-      className="gap-3 bg-card/70 ring-border/60 transition-colors hover:bg-card/90"
+      role="button"
+      tabIndex={0}
+      aria-label={`Open details for ${agent.title}`}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+      className="cursor-pointer gap-3 bg-card/70 ring-border/60 transition-colors hover:bg-card/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <CardHeader className="gap-2">
         <div className="flex items-start justify-between gap-3">
@@ -751,7 +792,9 @@ function AgentCardPreview({ agent }: { agent: AgentCard }) {
               {agent.latestMessage}
             </p>
           ) : null}
-          {previewArtifact ? <ArtifactTile artifact={previewArtifact} /> : null}
+          {previewArtifact ? (
+            <ArtifactTile artifact={previewArtifact} stopPropagation />
+          ) : null}
         </CardContent>
       ) : null}
       <CardFooter className="flex-wrap justify-between gap-2 border-t-0 bg-transparent text-xs text-muted-foreground">
@@ -762,6 +805,7 @@ function AgentCardPreview({ agent }: { agent: AgentCard }) {
             target="_blank"
             rel="noreferrer"
             className="text-foreground underline-offset-4 hover:underline"
+            onClick={(event) => event.stopPropagation()}
           >
             PR
           </a>
@@ -771,10 +815,20 @@ function AgentCardPreview({ agent }: { agent: AgentCard }) {
   )
 }
 
-function ArtifactTile({ artifact }: { artifact: AgentCard["artifacts"][number] }) {
+function ArtifactTile({
+  artifact,
+  stopPropagation = false,
+}: {
+  artifact: AgentCard["artifacts"][number]
+  stopPropagation?: boolean
+}) {
+  const blockPointer = stopPropagation
+    ? { onClick: (event: React.MouseEvent) => event.stopPropagation() }
+    : {}
+
   if (artifact.previewKind === "video" && artifact.mediaUrl) {
     return (
-      <div className="overflow-hidden rounded-lg bg-muted">
+      <div className="overflow-hidden rounded-lg bg-muted" {...blockPointer}>
         <video
           src={artifact.mediaUrl}
           className="aspect-video w-full object-cover"
@@ -809,6 +863,7 @@ function ArtifactTile({ artifact }: { artifact: AgentCard["artifacts"][number] }
         target="_blank"
         rel="noreferrer"
         className="group overflow-hidden rounded-lg bg-muted"
+        {...blockPointer}
       >
         {/* eslint-disable-next-line @next/next/no-img-element -- artifact media is served through an authenticated app route. */}
         <img

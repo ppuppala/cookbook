@@ -7,7 +7,10 @@ import { Agent, Cursor } from "@cursor/sdk"
 
 import type {
   AgentCard,
+  AgentDetailResponse,
   AgentListResponse,
+  AgentRunSummary,
+  AgentStreamEvent,
   ArtifactPreview,
   CreateAgentInput,
   CreateAgentResponse,
@@ -37,9 +40,22 @@ type SdkAgentLike = UnknownRecord & {
   [Symbol.asyncDispose]?: () => Promise<void>
 }
 
+type SdkRunLike = {
+  id: string
+  agentId: string
+  status?: string
+  result?: string
+  durationMs?: number
+  createdAt?: number
+  supports?: (operation: string) => boolean
+  stream?: () => AsyncGenerator<unknown, void>
+  conversation?: () => Promise<unknown[]>
+}
+
 type AgentNamespace = {
   list?: (options: UnknownRecord) => Promise<unknown>
   listRuns?: (agentId: string, options?: UnknownRecord) => Promise<unknown>
+  getRun?: (runId: string, options?: UnknownRecord) => Promise<SdkRunLike>
   create: (options: UnknownRecord) => Promise<SdkAgentLike>
   get?: (id: string, options?: UnknownRecord) => Promise<unknown>
   resume?: (id: string, options?: UnknownRecord) => Promise<SdkAgentLike>
@@ -183,7 +199,8 @@ export async function clearPersistedKey() {
 export async function requireSession(request: Request): Promise<Session> {
   const sessionId =
     request.headers.get("x-agent-kanban-session")?.trim() ??
-    getCookie(request, "agent-kanban-session")?.trim()
+    getCookie(request, "agent-kanban-session")?.trim() ??
+    new URL(request.url).searchParams.get("session")?.trim()
   if (!sessionId) {
     throw new MissingCursorApiKeyError()
   }
@@ -374,6 +391,81 @@ export async function listArtifactsForAgent(
 
   await disposeAgent(agent)
   return previews
+}
+
+export async function getCloudAgentDetail(
+  apiKey: string,
+  agentId: string
+): Promise<AgentDetailResponse> {
+  const [runs, artifacts, rawAgent] = await Promise.all([
+    listRunsForAgent(apiKey, agentId).catch(() => []),
+    listArtifactsForAgent(apiKey, agentId).catch(() => []),
+    agentSdk.get
+      ? agentSdk.get(agentId, { apiKey }).catch(() => null)
+      : Promise.resolve(null),
+  ])
+
+  const card = rawAgent
+    ? normalizeAgent(rawAgent)
+    : {
+        id: agentId,
+        title: `Agent ${agentId.slice(0, 8)}`,
+        status: "no_status",
+        repository: "Unknown repository",
+        artifacts: [],
+      }
+
+  enrichAgentCardFromRuns(card, runs)
+  card.artifacts = artifacts
+
+  return {
+    agent: card,
+    runs: runs.map(toAgentRunSummary).filter((run): run is AgentRunSummary =>
+      Boolean(run.id)
+    ),
+  }
+}
+
+export async function streamCloudRunEvents(
+  apiKey: string,
+  agentId: string,
+  runId: string,
+  emit: (event: AgentStreamEvent) => void
+) {
+  if (!agentSdk.getRun) {
+    throw new Error("This version of @cursor/sdk does not support Agent.getRun.")
+  }
+
+  const run = await agentSdk.getRun(runId, {
+    runtime: "cloud",
+    agentId,
+    apiKey,
+  })
+
+  if (!run.stream || run.supports?.("stream") === false) {
+    throw new Error("This run does not support streaming progress updates.")
+  }
+
+  emit({
+    type: "run_status",
+    status: run.status ?? "running",
+    result: run.result,
+    durationMs: run.durationMs,
+  })
+
+  for await (const message of run.stream()) {
+    const event = sdkMessageToStreamEvent(message)
+    if (event) {
+      emit(event)
+    }
+  }
+
+  emit({
+    type: "run_status",
+    status: run.status ?? "finished",
+    result: run.result,
+    durationMs: run.durationMs,
+  })
 }
 
 export async function listRunsForAgent(
@@ -642,6 +734,124 @@ function enrichAgentCardFromRuns(card: AgentCard, runs: RunSummary[]) {
   if (latestRun.repoUrl) {
     card.repositoryUrl = normalizeRepositoryListUrl(latestRun.repoUrl)
     card.repository = labelFromRepositoryString(latestRun.repoUrl)
+  }
+}
+
+function toAgentRunSummary(run: RunSummary): AgentRunSummary {
+  return {
+    id: run.id ?? "",
+    status: run.status,
+    createdAt: run.createdAt,
+    durationMs: run.durationMs,
+    result: run.result,
+    branch: run.branch,
+    prUrl: run.prUrl,
+  }
+}
+
+function sdkMessageToStreamEvent(message: unknown): AgentStreamEvent | null {
+  const record = asRecord(message)
+  const type = firstString(record, ["type"])
+  if (!type) {
+    return null
+  }
+
+  switch (type) {
+    case "user": {
+      const text = extractMessageText(asRecord(record.message))
+      return text ? { type: "user", text } : null
+    }
+    case "assistant": {
+      const text = extractAssistantText(record)
+      return text ? { type: "assistant", text } : null
+    }
+    case "thinking": {
+      const text = firstString(record, ["text"])
+      return text ? { type: "thinking", text } : null
+    }
+    case "tool_call": {
+      const callId =
+        firstString(record, ["call_id", "callId", "id"]) ?? `tool-${randomUUID()}`
+      const name = firstString(record, ["name"]) ?? "tool"
+      const status = firstString(record, ["status"]) ?? "running"
+      return {
+        type: "tool",
+        callId,
+        name,
+        status,
+        args: summarizeToolPayload(record.args ?? record.input),
+        result: summarizeToolPayload(record.result),
+      }
+    }
+    case "status":
+      return {
+        type: "status",
+        status: firstString(record, ["status"]) ?? "RUNNING",
+        message: firstString(record, ["message"]),
+      }
+    case "task":
+      return {
+        type: "task",
+        status: firstString(record, ["status"]),
+        text: firstString(record, ["text"]),
+      }
+    default:
+      return null
+  }
+}
+
+function extractMessageText(message: UnknownRecord) {
+  const content = message.content
+  if (!Array.isArray(content)) {
+    return firstString(message, ["text", "content"])
+  }
+
+  return content
+    .map((block) => {
+      const blockRecord = asRecord(block)
+      return blockRecord.type === "text" ? firstString(blockRecord, ["text"]) : undefined
+    })
+    .filter(Boolean)
+    .join("\n")
+}
+
+function extractAssistantText(record: UnknownRecord) {
+  const message = asRecord(record.message)
+  const content = message.content
+  if (!Array.isArray(content)) {
+    return firstString(message, ["text", "content"])
+  }
+
+  return content
+    .map((block) => {
+      const blockRecord = asRecord(block)
+      if (blockRecord.type === "text") {
+        return firstString(blockRecord, ["text"])
+      }
+      if (blockRecord.type === "tool_use") {
+        const name = firstString(blockRecord, ["name"]) ?? "tool"
+        return `[Tool requested: ${name}]`
+      }
+      return undefined
+    })
+    .filter(Boolean)
+    .join("\n")
+}
+
+function summarizeToolPayload(value: unknown) {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+
+  if (typeof value === "string") {
+    return value.length > 240 ? `${value.slice(0, 240)}…` : value
+  }
+
+  try {
+    const serialized = JSON.stringify(value)
+    return serialized.length > 240 ? `${serialized.slice(0, 240)}…` : serialized
+  } catch {
+    return String(value)
   }
 }
 
