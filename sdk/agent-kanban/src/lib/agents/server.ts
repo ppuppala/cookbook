@@ -15,6 +15,7 @@ import type {
   CreateAgentInput,
   CreateAgentResponse,
   ModelOption,
+  PrStatus,
   PublicSession,
   PublicUser,
   RepositoryOption,
@@ -81,6 +82,7 @@ type RunSummary = {
   result?: string
   branch?: string
   prUrl?: string
+  prStatus?: PrStatus
   repoUrl?: string
 }
 
@@ -701,6 +703,12 @@ function normalizeAgent(rawAgent: unknown): AgentCard {
     prUrl:
       firstString(record, ["prUrl", "pullRequestUrl"]) ??
       firstString(asRecord(record.pullRequest), ["url", "htmlUrl"]),
+    prStatus: normalizePrStatus(
+      firstString(record, ["prUrl", "pullRequestUrl"]) ??
+        firstString(asRecord(record.pullRequest), ["url", "htmlUrl"]),
+      record,
+      asRecord(record.pullRequest)
+    ),
     latestMessage:
       firstString(record, ["latestMessage", "lastMessage", "prompt", "description"]) ??
       firstString(asRecord(record.latestRun), ["summary", "statusText"]),
@@ -731,6 +739,14 @@ function enrichAgentCardFromRuns(card: AgentCard, runs: RunSummary[]) {
     card.prUrl = latestRun.prUrl
   }
 
+  if (latestRun.prStatus) {
+    card.prStatus = latestRun.prStatus
+  } else if (card.prUrl) {
+    card.prStatus = card.prStatus ?? "unknown"
+  } else {
+    card.prStatus = "none"
+  }
+
   if (latestRun.repoUrl) {
     card.repositoryUrl = normalizeRepositoryListUrl(latestRun.repoUrl)
     card.repository = labelFromRepositoryString(latestRun.repoUrl)
@@ -746,6 +762,7 @@ function toAgentRunSummary(run: RunSummary): AgentRunSummary {
     result: run.result,
     branch: run.branch,
     prUrl: run.prUrl,
+    prStatus: run.prStatus,
   }
 }
 
@@ -860,6 +877,8 @@ function normalizeRun(rawRun: unknown): RunSummary {
   const gitRecord = asRecord(record.git ?? record._git)
   const branchRecord = firstRecordFromArray(gitRecord.branches)
 
+  const prUrl = firstString(branchRecord, ["prUrl", "pullRequestUrl"])
+
   return {
     id: firstString(record, ["id", "runId"]),
     status: normalizeAgentStatus(record),
@@ -867,9 +886,55 @@ function normalizeRun(rawRun: unknown): RunSummary {
     durationMs: firstNumber(record, ["durationMs", "_durationMs"]),
     result: firstString(record, ["result", "_result"]),
     branch: firstString(branchRecord, ["branch", "name"]),
-    prUrl: firstString(branchRecord, ["prUrl", "pullRequestUrl"]),
+    prUrl,
+    prStatus: normalizePrStatus(prUrl, branchRecord, record, asRecord(record.pullRequest)),
     repoUrl: firstString(branchRecord, ["repoUrl", "repositoryUrl"]),
   }
+}
+
+function normalizePrStatus(
+  prUrl: string | undefined,
+  ...records: UnknownRecord[]
+): PrStatus {
+  if (!prUrl?.trim()) {
+    return "none"
+  }
+
+  for (const record of records) {
+    const pullRequest = asRecord(record.pullRequest)
+    const merged =
+      record.merged === true ||
+      pullRequest.merged === true ||
+      pullRequest.isMerged === true
+    const draft =
+      record.draft === true ||
+      record.isDraft === true ||
+      pullRequest.draft === true ||
+      pullRequest.isDraft === true
+    const state = (
+      firstString(record, [
+        "prStatus",
+        "prState",
+        "pullRequestState",
+        "pullRequestStatus",
+      ]) ?? firstString(pullRequest, ["state", "status"])
+    )?.toLowerCase()
+
+    if (draft || state === "draft") {
+      return "draft"
+    }
+    if (merged || state === "merged") {
+      return "merged"
+    }
+    if (state === "open") {
+      return "open"
+    }
+    if (state === "closed") {
+      return "closed"
+    }
+  }
+
+  return "unknown"
 }
 
 function normalizeAgentStatus(record: UnknownRecord) {
