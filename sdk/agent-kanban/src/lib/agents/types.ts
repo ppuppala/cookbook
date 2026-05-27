@@ -67,3 +67,39 @@ export type CreateAgentInput = {
 export type CreateAgentResponse = {
   agent: AgentCard
 }
+
+export type AgentRunSummary = {
+  id: string
+  status?: string
+  createdAt?: string
+  durationMs?: number
+  result?: string
+  branch?: string
+  prUrl?: string
+}
+
+export type AgentDetailResponse = {
+  agent: AgentCard
+  runs: AgentRunSummary[]
+}
+
+export type AgentStreamEvent =
+  | { type: "user"; text: string }
+  | { type: "assistant"; text: string }
+  | { type: "thinking"; text: string; id?: string }
+  | {
+      type: "tool"
+      callId: string
+      name: string
+      status: string
+      args?: string
+      result?: string
+    }
+  | { type: "status"; status: string; message?: string }
+  | { type: "task"; status?: string; text?: string }
+  | {
+      type: "run_status"
+      status: string
+      result?: string
+      durationMs?: number
+    }
