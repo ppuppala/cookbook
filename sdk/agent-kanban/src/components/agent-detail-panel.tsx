@@ -34,6 +34,7 @@ import type {
   AgentDetailResponse,
   AgentRunSummary,
   AgentStreamEvent,
+  PrStatus,
 } from "@/lib/agents/types"
 import { cn } from "@/lib/utils"
 
@@ -252,6 +253,9 @@ export function AgentDetailPanel({
             {selectedRun?.durationMs ? (
               <span>· {formatDuration(selectedRun.durationMs)}</span>
             ) : null}
+            {activeAgent.prStatus && activeAgent.prStatus !== "none" ? (
+              <span>{formatPrStatusLabel(activeAgent.prStatus)}</span>
+            ) : null}
             {activeAgent.prUrl ? (
               <a
                 href={activeAgent.prUrl}
@@ -321,7 +325,7 @@ function RunActivityFeed({
   runId: string
   sessionId: string
   isLoadingDetail: boolean
-  onRunStatus: (status: string) => void
+  onRunStatus: React.Dispatch<React.SetStateAction<string>>
   onStreamingChange: (isStreaming: boolean) => void
   onStreamError: (message: string) => void
 }) {
@@ -631,6 +635,23 @@ function formatStatusLabel(value: string) {
   return value
     .replace(/[_-]/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function formatPrStatusLabel(status: PrStatus) {
+  switch (status) {
+    case "none":
+      return "No PR"
+    case "open":
+      return "Open"
+    case "draft":
+      return "Draft"
+    case "merged":
+      return "Merged"
+    case "closed":
+      return "Closed"
+    case "unknown":
+      return "Unknown"
+  }
 }
 
 function formatRunLabel(run: AgentRunSummary) {

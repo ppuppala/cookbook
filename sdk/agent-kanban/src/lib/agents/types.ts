@@ -24,6 +24,8 @@ export type RepositoryOption = {
   defaultBranch?: string
 }
 
+export type PrStatus = "none" | "open" | "closed" | "merged" | "draft" | "unknown"
+
 export type ArtifactPreview = {
   path: string
   name: string
@@ -46,6 +48,7 @@ export type AgentCard = {
   createdAt?: string
   updatedAt?: string
   prUrl?: string
+  prStatus?: PrStatus
   latestMessage?: string
   artifacts: ArtifactPreview[]
 }
@@ -76,6 +79,7 @@ export type AgentRunSummary = {
   result?: string
   branch?: string
   prUrl?: string
+  prStatus?: PrStatus
 }
 
 export type AgentDetailResponse = {

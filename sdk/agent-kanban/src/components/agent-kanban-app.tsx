@@ -46,6 +46,7 @@ import type {
   AgentListResponse,
   CreateAgentResponse,
   ModelOption,
+  PrStatus,
   PublicSession,
   RepositoryOption,
 } from "@/lib/agents/types"
@@ -67,6 +68,10 @@ type SelectableGroupOption = GroupOption & {
 }
 
 type SidebarFilter = "all" | "withArtifacts" | "prAgents" | "recentlyActive"
+
+type AgentStatusFilter = "all" | string
+
+type PrStatusFilter = "all" | PrStatus
 
 type AppStatus = "checking" | "onboarding" | "ready"
 
@@ -92,6 +97,19 @@ const dateBucketOrder = new Map([
   ["Older", 4],
   ["No date", 5],
 ])
+
+const prStatusFilterOptions: {
+  value: PrStatusFilter
+  label: string
+}[] = [
+  { value: "all", label: "All PR statuses" },
+  { value: "none", label: "No PR" },
+  { value: "open", label: "Open" },
+  { value: "draft", label: "Draft" },
+  { value: "merged", label: "Merged" },
+  { value: "closed", label: "Closed" },
+  { value: "unknown", label: "PR (status unknown)" },
+]
 
 const sidebarFilters: {
   id: SidebarFilter
@@ -129,6 +147,9 @@ export function AgentKanbanApp() {
   const [models, setModels] = React.useState<ModelOption[]>([])
   const [groupBy, setGroupBy] = React.useState<GroupBy>(defaultGroupBy)
   const [sidebarFilter, setSidebarFilter] = React.useState<SidebarFilter>("all")
+  const [agentStatusFilter, setAgentStatusFilter] =
+    React.useState<AgentStatusFilter>("all")
+  const [prStatusFilter, setPrStatusFilter] = React.useState<PrStatusFilter>("all")
   const [query, setQuery] = React.useState("")
   const [isLoading, setIsLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -238,11 +259,20 @@ export function AgentKanbanApp() {
   }
 
   const searchedAgents = searchAgents(agents, query)
-  const visibleAgents = filterAgentsBySidebar(searchedAgents, sidebarFilter)
+  const statusFilteredAgents = filterAgentsByAgentStatus(
+    searchedAgents,
+    agentStatusFilter
+  )
+  const prStatusFilteredAgents = filterAgentsByPrStatus(
+    statusFilteredAgents,
+    prStatusFilter
+  )
+  const visibleAgents = filterAgentsBySidebar(prStatusFilteredAgents, sidebarFilter)
+  const agentStatusFilterOptions = getAgentStatusFilterOptions(searchedAgents)
   const showBoardLoading = isLoading && agents.length === 0 && visibleAgents.length === 0
   const sidebarItems = sidebarFilters.map((item) => ({
     ...item,
-    count: filterAgentsBySidebar(searchedAgents, item.id).length,
+    count: filterAgentsBySidebar(prStatusFilteredAgents, item.id).length,
   }))
   const selectedGroupOption = groupOptions.find((option) => option.id === selectedGroupBy)
   const SelectedGroupIcon = selectedGroupOption?.icon
@@ -372,6 +402,63 @@ export function AgentKanbanApp() {
               className="h-8 border-0 bg-muted/60 pl-8"
             />
           </div>
+
+          <Select
+            items={agentStatusFilterOptions.map((option) => ({
+              label: option.label,
+              value: option.value,
+            }))}
+            value={agentStatusFilter}
+            onValueChange={(value) => {
+              if (value) {
+                setAgentStatusFilter(value)
+              }
+            }}
+          >
+            <SelectTrigger aria-label="Filter by agent status" size="sm">
+              <CirclesFourIcon
+                aria-hidden="true"
+                className="text-muted-foreground"
+              />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectGroup>
+                {agentStatusFilterOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+
+          <Select
+            items={prStatusFilterOptions.map((option) => ({
+              label: option.label,
+              value: option.value,
+            }))}
+            value={prStatusFilter}
+            onValueChange={(value) => {
+              if (isPrStatusFilter(value)) {
+                setPrStatusFilter(value)
+              }
+            }}
+          >
+            <SelectTrigger aria-label="Filter by pull request status" size="sm">
+              <GitBranchIcon aria-hidden="true" className="text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectGroup>
+                {prStatusFilterOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
 
           <Select
             items={selectableGroupOptions.map((option) => ({
@@ -799,17 +886,22 @@ function AgentCardPreview({
       ) : null}
       <CardFooter className="flex-wrap justify-between gap-2 border-t-0 bg-transparent text-xs text-muted-foreground">
         <span>{formatRelativeTime(agent.updatedAt ?? agent.createdAt)}</span>
-        {agent.prUrl ? (
-          <a
-            href={agent.prUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="text-foreground underline-offset-4 hover:underline"
-            onClick={(event) => event.stopPropagation()}
-          >
-            PR
-          </a>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {agent.prStatus && agent.prStatus !== "none" ? (
+            <PrStatusBadge status={agent.prStatus} />
+          ) : null}
+          {agent.prUrl ? (
+            <a
+              href={agent.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-foreground underline-offset-4 hover:underline"
+              onClick={(event) => event.stopPropagation()}
+            >
+              PR
+            </a>
+          ) : null}
+        </div>
       </CardFooter>
     </Card>
   )
@@ -1173,6 +1265,21 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge variant={variant}>{formatStatusLabel(status)}</Badge>
 }
 
+function PrStatusBadge({ status }: { status: PrStatus }) {
+  const variant =
+    status === "merged"
+      ? "secondary"
+      : status === "open"
+        ? "outline"
+        : status === "draft"
+          ? "outline"
+          : status === "closed"
+            ? "destructive"
+            : "ghost"
+
+  return <Badge variant={variant}>{formatPrStatusLabel(status)}</Badge>
+}
+
 function groupAgents(agents: AgentCard[], groupBy: GroupBy) {
   const groups = new Map<string, AgentCard[]>()
 
@@ -1224,6 +1331,7 @@ function searchAgents(agents: AgentCard[], query: string) {
     [
       agent.title,
       agent.status,
+      agent.prStatus ? formatPrStatusLabel(agent.prStatus) : undefined,
       agent.repository,
       agent.branch,
       agent.createdBy,
@@ -1231,6 +1339,69 @@ function searchAgents(agents: AgentCard[], query: string) {
     ]
       .filter(Boolean)
       .some((value) => value?.toLowerCase().includes(normalizedQuery))
+  )
+}
+
+function getAgentStatusFilterOptions(agents: AgentCard[]) {
+  const statuses = new Map<string, string>()
+
+  for (const agent of agents) {
+    const key = agent.status.trim().toLowerCase()
+    if (!key) {
+      continue
+    }
+    statuses.set(key, formatStatusLabel(agent.status))
+  }
+
+  const sortedStatuses = Array.from(statuses.entries()).sort((left, right) =>
+    left[1].localeCompare(right[1])
+  )
+
+  return [
+    { value: "all", label: "All agent statuses" },
+    ...sortedStatuses.map(([value, label]) => ({ value, label })),
+  ]
+}
+
+function filterAgentsByAgentStatus(
+  agents: AgentCard[],
+  filter: AgentStatusFilter
+) {
+  if (filter === "all") {
+    return agents
+  }
+
+  const normalizedFilter = filter.trim().toLowerCase()
+  return agents.filter(
+    (agent) => agent.status.trim().toLowerCase() === normalizedFilter
+  )
+}
+
+function filterAgentsByPrStatus(agents: AgentCard[], filter: PrStatusFilter) {
+  if (filter === "all") {
+    return agents
+  }
+
+  return agents.filter((agent) => resolvePrStatus(agent) === filter)
+}
+
+function resolvePrStatus(agent: AgentCard): PrStatus {
+  if (agent.prStatus) {
+    return agent.prStatus
+  }
+
+  return agent.prUrl ? "unknown" : "none"
+}
+
+function isPrStatusFilter(value: string | null): value is PrStatusFilter {
+  return (
+    value === "all" ||
+    value === "none" ||
+    value === "open" ||
+    value === "closed" ||
+    value === "merged" ||
+    value === "draft" ||
+    value === "unknown"
   )
 }
 
@@ -1348,6 +1519,23 @@ function formatStatusLabel(value: string) {
   }
 
   return titleCase(value)
+}
+
+function formatPrStatusLabel(status: PrStatus) {
+  switch (status) {
+    case "none":
+      return "No PR"
+    case "open":
+      return "Open"
+    case "closed":
+      return "Closed"
+    case "merged":
+      return "Merged"
+    case "draft":
+      return "Draft"
+    case "unknown":
+      return "Unknown"
+  }
 }
 
 function dateBucket(value: string | undefined) {
